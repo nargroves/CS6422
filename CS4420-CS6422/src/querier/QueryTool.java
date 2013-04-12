@@ -8,8 +8,10 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -42,6 +44,10 @@ import javax.swing.JTextField;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableModel;
 
+import main.Driver;
+
+import parsers.Parser;
+
 public class QueryTool {
 
 	HashMap<JCheckBox,ArrayList<JCheckBox>>map = new HashMap<JCheckBox,ArrayList<JCheckBox>>();
@@ -68,9 +74,11 @@ public class QueryTool {
 	JPanel pWhatColumns = new JPanel();
 	JPanel pWhatRelationships = new JPanel();
 	final JTextArea textArea = new JTextArea(5,50);
-	JScrollPane spTables, spColumns, spRelationships, spQuery;
+	final JTextArea textArea2 = new JTextArea(5,50);
+	JScrollPane spTables, spColumns, spRelationships, spQuery, spCreate;
 	int numberOfTablesChecked = 0;
 	String databaseName = "";
+	JFileChooser chooser;
 
 	private String defaultFilePath = "resources/default.txt", driverFilePath = "com.mysql.jdbc.Driver";
 	
@@ -139,6 +147,8 @@ public class QueryTool {
 		
 		pWhatTables.setLayout(new BoxLayout(pWhatTables, BoxLayout.Y_AXIS));
 		pWhatColumns.setLayout(new BoxLayout(pWhatColumns, BoxLayout.Y_AXIS));
+		pWhatRelationships.setLayout(new BoxLayout(pWhatRelationships, BoxLayout.Y_AXIS));
+
 
 
 		JLabel lWhatTables = new JLabel("What Tables?");
@@ -195,14 +205,15 @@ public class QueryTool {
 	
 	public void createNewRow() {
 		pWhatRelationships.setSize(new Dimension(150,200));
-
+		JPanel panel = new JPanel();
 		String [] operations = {" = ", " != ", " < ", " <= ", " > ", " >= ", " LIKE ", " NOT LIKE "};
 		JComboBox firstOption = new JComboBox();
 		JComboBox operation = new JComboBox(operations);
 		JComboBox secondOption = new JComboBox();
-		pWhatRelationships.add(firstOption);
-		pWhatRelationships.add(operation);
-		pWhatRelationships.add(secondOption);
+		panel.add(firstOption);
+		panel.add(operation);
+		panel.add(secondOption);
+		pWhatRelationships.add(panel);
 	}
 	
 	public void testQuery() {
@@ -483,12 +494,16 @@ public class QueryTool {
 	}
 	
 	public void buildTableCreationPanel() {
-        final JFileChooser chooser = new JFileChooser();
+		textArea2.setEditable(false);
+		textArea2.setLineWrap(true);
+		textArea2.setWrapStyleWord(true);
+        chooser = new JFileChooser();
         FileNameExtensionFilter filter = new FileNameExtensionFilter("Delimited Files", "csv", "psv", "tsv", "xls", "xlsx", "txt");
         chooser.setFileFilter(filter);
         JButton bOpenFile = new JButton("Select a File...");
         JButton bProcess = new JButton("Process File");
         final JTextField tfFilePath = new JTextField(50);
+		spCreate = new JScrollPane(textArea2,JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         bOpenFile.addActionListener(new ActionListener() {
 			public void actionPerformed(ActionEvent e) {
 				int returnVal = chooser.showOpenDialog(outline);
@@ -499,7 +514,17 @@ public class QueryTool {
 		});
         bProcess.addActionListener(new ActionListener() {
 			public void actionPerformed(ActionEvent e) {
-				
+				try {
+					createDelimitedFile(chooser.getSelectedFile().getPath(),chooser.getSelectedFile().getName());
+				} catch (IOException e1) {
+					// TODO Auto-generated catch block
+					e1.printStackTrace();
+				} catch (SQLException e2) {
+			        JOptionPane.showConfirmDialog(null, "Table Upload Failed!", "Failure", JOptionPane.DEFAULT_OPTION, JOptionPane.ERROR_MESSAGE);
+
+					// TODO Auto-generated catch block
+					e2.printStackTrace();
+				}
 			}
 		});
         
@@ -513,9 +538,70 @@ public class QueryTool {
 		c.gridx = 0;
 	    c.gridy = 10;
 		tableCreationPanel.add(bProcess,c);
-
+		c.gridx = 0;
+	    c.gridy = 20;
+	    c.gridwidth = 20;
+		tableCreationPanel.add(spCreate,c);
 	}
 	
+	public void createDelimitedFile(String filePath, String fileName) throws IOException, SQLException {
+		// TODO Auto-generated method stub
+		String [] files = fileName.split("\\.",-1);
+		fileName = files[0];
+		Parser parser = new Driver(filePath).getParser();
+		BufferedReader reader = new BufferedReader(new FileReader(parser.getOutputPath()));
+		String [] columnNames = reader.readLine().split("~",-1);
+		String [] decipherThis = reader.readLine().split("~",-1);
+		
+		String createTableQuery = "CREATE TABLE "+fileName+" (";
+		for(int i = 0; i < columnNames.length; i++) {
+			createTableQuery += columnNames[i] + " " + getDataType(decipherThis[i]) + ", ";
+		}
+		createTableQuery = createTableQuery.substring(0,createTableQuery.length()-2);
+		createTableQuery += ")";
+		
+		Statement st = activeConnection.createStatement();
+		String dropTableQuery = "DROP TABLE IF EXISTS "+fileName;
+		st.executeUpdate(dropTableQuery);
+		st.executeUpdate(createTableQuery);
+		textArea2.setText(createTableQuery);
+		String loadDataQuery = "LOAD DATA LOCAL INFILE '"+parser.getOutputPath().replaceAll("\\\\","/")+"' INTO TABLE "+databaseName+"."+fileName+" FIELDS TERMINATED BY '~' IGNORE 1 LINES;";
+		st.executeUpdate(loadDataQuery);
+        JOptionPane.showConfirmDialog(null, "Table Uploaded Successfully!", "Success", JOptionPane.DEFAULT_OPTION, JOptionPane.INFORMATION_MESSAGE);
+		st.close();
+		//pWhatTables = new JPanel();
+		addTableCheckBoxes();
+	}
+	
+	public String getDataType(String dataToTranslate) {
+		String dataType = "";
+		//Used for differentiations between int and bigint and so on.
+		int numberOfChars = dataToTranslate.length();
+		if(dataToTranslate.matches("\\d*") && numberOfChars < 10) {
+            return "INTEGER";
+        }
+		else if (dataToTranslate.matches("\\d*") && numberOfChars > 9) {
+            return "BIGINT";
+        }
+		else if(dataToTranslate.matches("\\d*\\.\\d*") || dataToTranslate.matches("\\d\\.\\d") || dataToTranslate.matches("\\.\\d")) {
+            return "DECIMAL";
+        }
+		else if(dataToTranslate.matches("\\D*")) {
+			char[] colArray = dataToTranslate.toCharArray();
+            int colArrayLength = colArray.length;
+            if ((colArrayLength > 10) && colArray[4] == '-' && colArray[7] == '-') {
+                dataType = "DATE";
+            }
+            else {
+            	return "VARCHAR(250)";
+            }
+		}
+		else {
+			return "VARCHAR(250)";
+		}
+		return "VARCHAR(250)";
+	}
+
 	public void saveDatabaseDetails() {
         String ipaddress = tfAddress.getText(), portnumber = tfPort.getText(), username = tfUsername.getText(), databasename = tfDBName.getText();
         char[] password = pfPassword.getPassword();
